@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=rbac
+      - POSTGRES_PASSWORD=rbac
+      - POSTGRES_DB=rbac_service
+    ports:
+      - '5432:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U rbac']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  jwks-mock:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ['node', 'mocks/server.js']
+    ports:
+      - '4400:4400'
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ['npx', 'node-pg-migrate', 'up']
+    environment:
+      - DATABASE_URL=postgres://rbac:rbac@postgres:5432/rbac_service
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  rbac-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - '4300:4300'
+    environment:
+      - PORT=4300
+      - NODE_ENV=development
+      - DATABASE_URL=postgres://rbac:rbac@postgres:5432/rbac_service
+      - REDIS_URL=redis://redis:6379
+      - USE_MOCK_JWKS=true
+      - AUTHENTICATION_SERVICE_URL=http://jwks-mock:4400
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      jwks-mock:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
