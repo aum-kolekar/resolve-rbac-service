@@ -8,7 +8,7 @@ services:
     ports:
       - '5432:5432'
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U rbac']
+      test: ['CMD-SHELL', 'pg_isready -U rbac -d rbac_service']
       interval: 5s
       timeout: 3s
       retries: 5
@@ -50,7 +50,7 @@ services:
       - '4300:4300'
     environment:
       - PORT=4300
-      - NODE_ENV=development
+      - NODE_ENV=production
       - DATABASE_URL=postgres://rbac:rbac@postgres:5432/rbac_service
       - REDIS_URL=redis://redis:6379
       - USE_MOCK_JWKS=true
