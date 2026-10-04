@@ -1,0 +1,274 @@
+openapi: 3.0.3
+info:
+  title: Resolve — RBAC (Access Control) Service API
+  version: 0.1.0
+  description: |
+    Owns permissions/roles/role_permissions/user_roles in Postgres. Redis is
+    a pure cache in front of it, never a source of truth. See
+    `Resolve_Documentation/Contracts/RBAC_Service.md` for the full contract
+    this mirrors, including the exhaustive edge-case table (§12).
+servers:
+  - url: http://localhost:4300
+    description: Local development
+tags:
+  - name: Health
+  - name: Permissions
+  - name: Roles
+  - name: UserRoles
+  - name: Authz
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      responses:
+        '200': { description: Process is up }
+
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: Readiness probe (Postgres + Redis)
+      responses:
+        '200': { description: Postgres reachable (Redis degraded is still 200) }
+        '503': { description: Postgres unreachable }
+
+  /api/v1/rbac/permissions:
+    get:
+      tags: [Permissions]
+      summary: Full permission catalog
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  permissions:
+                    type: array
+                    items: { $ref: '#/components/schemas/Permission' }
+
+  /api/v1/rbac/roles:
+    get:
+      tags: [Roles]
+      summary: List roles visible to the caller's tenant
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Roles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  roles: { type: array, items: { $ref: '#/components/schemas/Role' } }
+    post:
+      tags: [Roles]
+      summary: Create a custom role, scoped to the caller's tenant (requires ROLE_MANAGE)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateRoleRequest' }
+      responses:
+        '201':
+          {
+            description: Created,
+            content: { application/json: { schema: { $ref: '#/components/schemas/Role' } } },
+          }
+        '400':
+          {
+            description: Unknown permission code,
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: Role name conflict,
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+
+  /api/v1/rbac/roles/{id}:
+    get:
+      tags: [Roles]
+      summary: Get a role by id (404 if it belongs to a different tenant - anti-enumeration)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200':
+          {
+            description: Role,
+            content: { application/json: { schema: { $ref: '#/components/schemas/Role' } } },
+          }
+        '404': { description: Not found }
+    patch:
+      tags: [Roles]
+      summary: Update a custom role (requires ROLE_MANAGE; 403 if system role)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateRoleRequest' }
+      responses:
+        '200':
+          {
+            description: Updated,
+            content: { application/json: { schema: { $ref: '#/components/schemas/Role' } } },
+          }
+        '403': { description: System role immutable }
+    delete:
+      tags: [Roles]
+      summary: Delete a custom role, cascades to user_roles (requires ROLE_MANAGE; 403 if system role)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '204': { description: Deleted }
+        '403': { description: System role immutable }
+
+  /api/v1/rbac/users/{userId}/roles:
+    get:
+      tags: [UserRoles]
+      summary: List roles a user holds in the caller's tenant
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: userId, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: Roles }
+    post:
+      tags: [UserRoles]
+      summary: Assign a role to a user (requires ROLE_MANAGE)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: userId, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [roleId]
+              properties: { roleId: { type: string, format: uuid } }
+      responses:
+        '201': { description: Assigned }
+        '409': { description: Already assigned }
+
+  /api/v1/rbac/users/{userId}/roles/{roleId}:
+    delete:
+      tags: [UserRoles]
+      summary: Revoke a role assignment (requires ROLE_MANAGE)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string } }
+        - { name: roleId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Revoked }
+        '404': { description: Assignment not found }
+
+  /api/v1/rbac/users/{userId}/permissions:
+    get:
+      tags: [UserRoles]
+      summary: Flattened permission list for a user (self, or ROLE_MANAGE for anyone in-tenant)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: userId, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: Flattened permissions }
+
+  /internal/v1/authz/check:
+    post:
+      tags: [Authz]
+      summary: The hot-path permission check every other service calls
+      security: [{ internalToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, organizationId, permission]
+              properties:
+                userId: { type: string }
+                organizationId: { type: string }
+                permission: { type: string, example: CASE_APPROVE }
+      responses:
+        '200':
+          description: Always 200 with a boolean - never 403 (Contract §7.1)
+          content:
+            application/json:
+              schema: { type: object, properties: { allowed: { type: boolean } } }
+        '400': { description: Unknown permission code }
+
+  /internal/v1/authz/check-bulk:
+    post:
+      tags: [Authz]
+      summary: Batch permission check
+      security: [{ internalToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, organizationId, permissions]
+              properties:
+                userId: { type: string }
+                organizationId: { type: string }
+                permissions: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: Map of permission code to boolean
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results: { type: object, additionalProperties: { type: boolean } }
+
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+    internalToken: { type: apiKey, in: header, name: X-Internal-Service-Token }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            requestId: { type: string }
+            traceId: { type: string }
+
+    Permission:
+      type: object
+      properties:
+        code: { type: string, example: CASE_READ }
+        description: { type: string }
+
+    Role:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        organizationId: { type: string, nullable: true, description: 'null = global system role' }
+        isSystemRole: { type: boolean }
+        permissions: { type: array, items: { type: string } }
+
+    CreateRoleRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        permissionCodes: { type: array, items: { type: string } }
+
+    UpdateRoleRequest:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        permissionCodes: { type: array, items: { type: string } }
