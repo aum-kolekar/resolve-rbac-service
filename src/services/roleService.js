@@ -57,7 +57,9 @@ async function validatePermissionCodes(codes) {
 }
 
 /** POST /api/v1/rbac/roles - always scoped to the caller's own tenant. */
-async function createRole(organizationId, { name, description, permissionCodes }) {
+async function createRole(organizationId, { name, description, permissionCodes: rawCodes }) {
+  // Contract §12: duplicate codes are silently de-duplicated, not an error.
+  const permissionCodes = [...new Set(rawCodes || [])];
   await validatePermissionCodes(permissionCodes || []);
 
   const pool = getPool();
@@ -93,6 +95,12 @@ async function createRole(organizationId, { name, description, permissionCodes }
     return attachPermissions(pool, role);
   } catch (err) {
     await client.query('ROLLBACK');
+    // Same check-then-insert race as role assignment: the partial unique
+    // indexes are the real guard, so surface their violation as the 409 the
+    // pre-check would have produced rather than a 500.
+    if (err.code === '23505') {
+      throw fromCode('AUTHZ_ROLE_NAME_CONFLICT', 'A role with that name already exists in this tenant.');
+    }
     throw err;
   } finally {
     client.release();
@@ -118,7 +126,8 @@ async function assertRoleEditable(pool, organizationId, roleId) {
  * user who holds this role (Contract §10) - a permission-set edit must not
  * leave stale grants cached for up to 60 seconds after being tightened.
  */
-async function updateRole(organizationId, roleId, { name, description, permissionCodes }) {
+async function updateRole(organizationId, roleId, { name, description, permissionCodes: rawCodes }) {
+  const permissionCodes = rawCodes ? [...new Set(rawCodes)] : undefined;
   const pool = getPool();
   await assertRoleEditable(pool, organizationId, roleId);
 
@@ -176,6 +185,12 @@ async function updateRole(organizationId, roleId, { name, description, permissio
     return attachPermissions(pool, updated);
   } catch (err) {
     await client.query('ROLLBACK');
+    // Same check-then-insert race as role assignment: the partial unique
+    // indexes are the real guard, so surface their violation as the 409 the
+    // pre-check would have produced rather than a 500.
+    if (err.code === '23505') {
+      throw fromCode('AUTHZ_ROLE_NAME_CONFLICT', 'A role with that name already exists in this tenant.');
+    }
     throw err;
   } finally {
     client.release();

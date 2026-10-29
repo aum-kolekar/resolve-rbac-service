@@ -1,4 +1,4 @@
-const { jwtVerify, createRemoteJWKSet } = require('jose');
+const { jwtVerify, createRemoteJWKSet, errors } = require('jose');
 const config = require('../config');
 const { fromCode } = require('../errors/AppError');
 
@@ -16,6 +16,26 @@ function getJwks() {
   return jwks;
 }
 
+// Network-level failures reaching Authentication Service's JWKS endpoint. These
+// are a dependency outage (503), NOT a bad token (401). Deliberately excludes
+// "no key matches this kid": that's what a forged/garbage token looks like and
+// must stay a 401 - reporting it as an outage would be both wrong and a handy
+// way to make the service look broken.
+const JWKS_UNAVAILABLE_CODES = new Set([
+  'ERR_JWKS_TIMEOUT',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+]);
+function isJwksUnavailable(err) {
+  if (err instanceof errors.JWKSTimeout) return true;
+  if (JWKS_UNAVAILABLE_CODES.has(err.code)) return true;
+  // Non-200 from the JWKS endpoint itself (e.g. Authentication Service is up but unhealthy).
+  return typeof err.message === 'string' && err.message.includes('Expected 200 OK from the JSON Web Key Set');
+}
+
 /**
  * Contract §3's verification: signature (via the fetched public key),
  * exp, and that this is an access token, not a refresh token misused as
@@ -31,7 +51,7 @@ async function authenticate(req, res, next) {
   const token = header.slice('Bearer '.length);
 
   try {
-    const { payload } = await jwtVerify(token, getJwks());
+    const { payload } = await jwtVerify(token, getJwks(), { issuer: config.auth.issuer });
 
     if (payload.type !== 'access') {
       return next(fromCode('AUTHZ_INVALID_TOKEN', 'Token is not an access token.'));
@@ -40,11 +60,7 @@ async function authenticate(req, res, next) {
     req.auth = payload; // { sub, tenantId, email, tokenId, type, iat, exp, iss }
     return next();
   } catch (err) {
-    if (
-      err.code === 'ERR_JWKS_TIMEOUT' ||
-      err.code === 'ERR_JWKS_NO_MATCHING_KEY' ||
-      err.name === 'JWKSNoMatchingKey'
-    ) {
+    if (isJwksUnavailable(err)) {
       return next(fromCode('DEPENDENCY_UNAVAILABLE', 'Authentication Service is temporarily unavailable.'));
     }
     return next(

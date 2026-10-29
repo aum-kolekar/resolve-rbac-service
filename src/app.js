@@ -20,8 +20,10 @@ function createApp() {
   app.use(helmet());
   app.use(cors());
   app.use(compression());
-  app.use(express.json({ limit: '100kb' }));
+  // requestContext must run BEFORE the body parser so parse errors still
+  // carry a requestId/traceId (Contract §2).
   app.use(requestContext);
+  app.use(express.json({ limit: '100kb' }));
   app.use(
     pinoHttp({
       logger,

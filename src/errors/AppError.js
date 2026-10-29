@@ -17,6 +17,7 @@ const ErrorCodes = Object.freeze({
   AUTHZ_ROLE_NAME_CONFLICT: { status: 409 },
   AUTHZ_ROLE_ALREADY_ASSIGNED: { status: 409 },
   AUTHZ_VALIDATION_ERROR: { status: 400 },
+  PAYLOAD_TOO_LARGE: { status: 413 },
   NOT_FOUND: { status: 404 },
   INTERNAL_ERROR: { status: 500 },
   DEPENDENCY_UNAVAILABLE: { status: 503 },
