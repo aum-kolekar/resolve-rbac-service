@@ -97,4 +97,16 @@ describe('rbac hardening regressions', () => {
     expect(rs.filter((r) => r.status === 409)).toHaveLength(7);
     expect(rs.filter((r) => r.status >= 500)).toHaveLength(0);
   });
+
+  it('permission-code validation does not hit Postgres on every check (catalog is cached in memory)', async () => {
+    const permissionService = require('../../src/services/permissionService');
+    permissionService._resetCatalogCacheForTests();
+    const spy = jest.spyOn(pool, 'query');
+    await permissionService.permissionCodeExists('CASE_READ');
+    await permissionService.permissionCodeExists('ROLE_MANAGE');
+    await permissionService.permissionCodeExists('NOT_A_CODE');
+    const catalogQueries = spy.mock.calls.filter(([sql]) => String(sql).includes('FROM permissions'));
+    spy.mockRestore();
+    expect(catalogQueries).toHaveLength(1);
+  });
 });
