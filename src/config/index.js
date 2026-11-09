@@ -26,6 +26,8 @@ const config = {
     useMockJwks: toBool(process.env.USE_MOCK_JWKS ?? 'true'),
     authenticationServiceUrl: process.env.AUTHENTICATION_SERVICE_URL || 'http://localhost:4400',
     internalServiceToken: process.env.INTERNAL_SERVICE_TOKEN || 'dev-internal-service-token',
+    // Contract §3: verification must check `iss` matches Authentication Service's issuer.
+    issuer: process.env.AUTH_ISSUER || 'resolve-authentication-service',
   },
 };
 

@@ -48,9 +48,35 @@ async function getFlattenedPermissions(organizationId, userId) {
   return computed;
 }
 
+// The permission catalog is static reference data (seeded by migration, with
+// no delete endpoint - Contract §12). Validating a code against Postgres on
+// EVERY authorization check cost a database round-trip per call, which both
+// defeated the point of the Redis permission cache and meant a Postgres outage
+// failed even cache-warm checks. Keep the code list in memory and refresh it
+// periodically; if a refresh fails (DB down) keep serving the last known list.
+const CATALOG_TTL_MS = 60 * 1000;
+let catalog = { codes: null, loadedAt: 0 };
+
+async function loadCatalogCodes() {
+  const fresh = catalog.codes && Date.now() - catalog.loadedAt < CATALOG_TTL_MS;
+  if (fresh) return catalog.codes;
+  try {
+    const { rows } = await getPool().query('SELECT code FROM permissions');
+    catalog = { codes: new Set(rows.map((r) => r.code)), loadedAt: Date.now() };
+  } catch (err) {
+    if (!catalog.codes) throw err; // nothing to fall back on (cold start + DB down)
+    // Stale-but-valid beats unavailable for reference data that essentially never changes.
+  }
+  return catalog.codes;
+}
+
 async function permissionCodeExists(code) {
-  const { rows } = await getPool().query('SELECT 1 FROM permissions WHERE code = $1', [code]);
-  return rows.length > 0;
+  return (await loadCatalogCodes()).has(code);
+}
+
+// Test-only: force the next lookup to hit the database.
+function _resetCatalogCacheForTests() {
+  catalog = { codes: null, loadedAt: 0 };
 }
 
 /**
@@ -93,4 +119,5 @@ module.exports = {
   checkPermissionsBulk,
   listPermissionCatalog,
   permissionCodeExists,
+  _resetCatalogCacheForTests,
 };

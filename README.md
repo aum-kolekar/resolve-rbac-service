@@ -27,7 +27,9 @@ already issued, the same way every other service will. `USE_MOCK_JWKS=true`
 (default) points at a local mock JWKS server (`mocks/server.js`) that also
 exposes a `signMockAccessToken()` helper tests use to mint tokens shaped
 exactly like real ones. Flip to `false` and point `AUTHENTICATION_SERVICE_URL`
-at a real running Authentication Service once both are up together.
+at a real running Authentication Service once both are up together. For the standalone Compose
+project, set `USE_MOCK_JWKS=false` and `AUTHENTICATION_SERVICE_URL` in `.env` to the reachable
+Authentication Service URL; the default mock configuration is only for isolated local development.
 
 ## Getting started
 
@@ -36,11 +38,12 @@ Requires a real Postgres (no way around it — this service's core function
 
 ```bash
 cp .env.example .env
+# Change RBAC_POSTGRES_PASSWORD before using this outside local development.
 npm install
 
-# Postgres + Redis need to be running and match .env's DATABASE_URL/REDIS_URL.
-# Easiest with Docker:
-docker compose up -d postgres redis
+# RBAC owns this PostgreSQL instance; it is not shared with Authentication Service.
+# Easiest with Docker (from this directory):
+docker compose up -d rbac-postgres redis
 
 npx node-pg-migrate up   # creates tables + seeds the permission catalog
 
@@ -49,8 +52,10 @@ npm run dev      # terminal 2 - the service itself
 curl http://localhost:4300/health
 ```
 
-Or the whole stack in one shot: `docker compose up --build` (runs migrations
-automatically via the `migrate` service before `rbac-service` starts).
+Or the whole RBAC stack in one shot: `docker compose up --build` (starts the dedicated
+`rbac-postgres`, runs migrations, then starts `rbac-service`). PostgreSQL data persists in the
+`resolve_rbac_service_postgres_data` named volume. The database is on a private internal Compose
+network shared only with RBAC and its migration job; `docker compose down -v` deletes it. This standalone Compose project is an alternative to the root integrated stack, not an additional stack to run alongside it (both expose the same local development ports).
 
 ## Scripts
 

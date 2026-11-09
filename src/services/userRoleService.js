@@ -44,13 +44,25 @@ async function assignRole(organizationId, userId, roleId, assignedBy) {
     throw fromCode('AUTHZ_ROLE_ALREADY_ASSIGNED', 'User already holds this role.');
   }
 
-  const {
-    rows: [assignment],
-  } = await pool.query(
-    `INSERT INTO user_roles (user_id, organization_id, role_id, assigned_by)
-     VALUES ($1, $2, $3, $4) RETURNING *`,
-    [userId, organizationId, roleId, assignedBy || null],
-  );
+  // The existence check above is not atomic with this insert: two concurrent
+  // identical requests can both pass it. The primary key is the real guard;
+  // translate its violation (23505) into the same 409 the check would give,
+  // instead of letting the loser of the race surface as a 500.
+  let assignment;
+  try {
+    ({
+      rows: [assignment],
+    } = await pool.query(
+      `INSERT INTO user_roles (user_id, organization_id, role_id, assigned_by)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [userId, organizationId, roleId, assignedBy || null],
+    ));
+  } catch (err) {
+    if (err.code === '23505') {
+      throw fromCode('AUTHZ_ROLE_ALREADY_ASSIGNED', 'User already holds this role.');
+    }
+    throw err;
+  }
 
   await permissionCache.invalidate(organizationId, userId);
 

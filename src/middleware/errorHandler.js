@@ -1,8 +1,30 @@
-const { AppError } = require('../errors/AppError');
+const { AppError, fromCode } = require('../errors/AppError');
 const logger = require('../utils/logger');
 
+/**
+ * Translate errors that are really client mistakes but arrive as plain
+ * (non-AppError) exceptions, so they surface as 4xx instead of a misleading 500:
+ *  - body-parser: malformed JSON / oversized body
+ *  - Postgres 22P02 (invalid_text_representation): a path or body value that
+ *    isn't a valid UUID reached a uuid-typed column (e.g. GET /roles/abc)
+ */
+function normalizeError(err) {
+  if (err instanceof AppError) return err;
+  if (err.type === 'entity.parse.failed') {
+    return fromCode('AUTHZ_VALIDATION_ERROR', 'Request body is not valid JSON.');
+  }
+  if (err.type === 'entity.too.large') {
+    return fromCode('PAYLOAD_TOO_LARGE', 'Request body is too large.');
+  }
+  if (err.code === '22P02') {
+    return fromCode('AUTHZ_VALIDATION_ERROR', 'An identifier in the request is not a valid UUID.');
+  }
+  return err;
+}
+
 // eslint-disable-next-line no-unused-vars
-function errorHandler(err, req, res, next) {
+function errorHandler(rawErr, req, res, next) {
+  const err = normalizeError(rawErr);
   const isAppError = err instanceof AppError;
   const statusCode = isAppError ? err.statusCode : 500;
   const code = isAppError ? err.code : 'INTERNAL_ERROR';
